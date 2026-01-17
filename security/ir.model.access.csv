@@ -1,0 +1,10 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_stock_quant_api,stock.quant.api,stock.model_stock_quant,base.group_user,1,1,1,1
+access_stock_picking_api,stock.picking.api,stock.model_stock_picking,base.group_user,1,1,1,1
+access_stock_move_api,stock.move.api,stock.model_stock_move,base.group_user,1,1,1,1
+access_stock_move_line_api,stock.move.line.api,stock.model_stock_move_line,base.group_user,1,1,1,1
+access_stock_location_api,stock.location.api,stock.model_stock_location,base.group_user,1,0,0,0
+access_stock_warehouse_api,stock.warehouse.api,stock.model_stock_warehouse,base.group_user,1,0,0,0
+access_product_template_api,product.template.api,product.model_product_template,base.group_user,1,0,0,0
+access_product_product_api,product.product.api,product.model_product_product,base.group_user,1,0,0,0
+
