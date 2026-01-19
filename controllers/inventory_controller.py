@@ -6,6 +6,11 @@ import logging
 
 _logger = logging.getLogger(__name__)
 
+# Log when module is loaded
+_logger.info('=' * 50)
+_logger.info('Inventory API Module: Controller loaded successfully')
+_logger.info('=' * 50)
+
 
 class InventoryAPI(http.Controller):
     """
@@ -34,6 +39,22 @@ class InventoryAPI(http.Controller):
             status=status,
             headers=self._cors_headers()
         )
+
+    @http.route('/api/health', type='http', auth='none', methods=['GET', 'OPTIONS'], csrf=False, cors='*')
+    def health_check(self):
+        """
+        Health check endpoint to verify API is working
+        GET /api/health
+        """
+        if request.httprequest.method == 'OPTIONS':
+            return Response(status=200, headers=self._cors_headers())
+        
+        return self._json_response({
+            'success': True,
+            'status': 'ok',
+            'message': 'Inventory API is operational',
+            'module': 'inventory_api'
+        })
 
     def _extract_size_and_color(self, variant):
         """
@@ -79,7 +100,7 @@ class InventoryAPI(http.Controller):
         
         return size, color
 
-    @http.route('/api/inventory/by-sku', type='http', auth='none', methods=['GET', 'OPTIONS'], csrf=False)
+    @http.route('/api/inventory/by-sku', type='http', auth='none', methods=['GET', 'OPTIONS'], csrf=False, cors='*')
     def get_inventory_by_sku(self, sku=None, warehouse_id=None, store_id=None, **kwargs):
         """
         Get inventory table by SKU (מק"ט) and warehouse/store ID
@@ -196,7 +217,7 @@ class InventoryAPI(http.Controller):
                 'message': 'Failed to get inventory by SKU'
             }, status=500)
 
-    @http.route('/api/inventory/transfer', type='http', auth='none', methods=['POST', 'OPTIONS'], csrf=False)
+    @http.route('/api/inventory/transfer', type='http', auth='none', methods=['POST', 'OPTIONS'], csrf=False, cors='*')
     def transfer_inventory(self, **kwargs):
         """
         Transfer inventory between locations (warehouse → store)
@@ -393,7 +414,7 @@ class InventoryAPI(http.Controller):
                 'message': 'Failed to transfer inventory'
             }, status=500)
 
-    @http.route('/api/inventory/adjust', type='http', auth='none', methods=['POST', 'OPTIONS'], csrf=False)
+    @http.route('/api/inventory/adjust', type='http', auth='none', methods=['POST', 'OPTIONS'], csrf=False, cors='*')
     def adjust_inventory(self, **kwargs):
         """
         Adjust inventory (inventory corrections)
