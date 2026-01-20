@@ -322,12 +322,13 @@ class InventoryAPI(http.Controller):
             destination_location = destination_warehouse.lot_stock_id
             quantity_float = float(quantity)
 
-            # Get On Hand quantity (quantity field) at source
+            # Get On Hand quantity and Available quantity at source
             source_quants = request.env['stock.quant'].sudo().search([
                 ('product_id', '=', variant.id),
                 ('location_id', 'child_of', source_location.id),
             ])
             on_hand_qty = sum(source_quants.mapped('quantity'))
+            available_qty = sum(source_quants.mapped('available_quantity'))
 
             # Validate quantity against On Hand quantity
             if on_hand_qty < quantity_float:
@@ -354,13 +355,29 @@ class InventoryAPI(http.Controller):
 
             # Get current quantities before transfer
             source_qty_before = on_hand_qty
+            source_available_before = available_qty
             destination_quants_before = request.env['stock.quant'].sudo().search([
                 ('product_id', '=', variant.id),
                 ('location_id', 'child_of', destination_location.id),
             ])
             destination_qty_before = sum(destination_quants_before.mapped('quantity'))
 
-            # Subtract quantity from source location quants
+            # Calculate how much to transfer:
+            # - Transfer available quantity (this will reduce Available)
+            # - Subtract full requested quantity from On Hand at source
+            # - Add full requested quantity to On Hand at destination
+            # - Available at destination should only increase by available_to_transfer
+            available_to_transfer = min(available_qty, quantity_float)
+            additional_to_add = max(0, quantity_float - available_qty)
+
+            # Subtract from source location:
+            # 1. Subtract full requested quantity (quantity_float) from On Hand
+            # 2. Available will decrease automatically, but we need to ensure it decreases by available_to_transfer only
+            # The logic: we subtract quantity_float from On Hand, which will reduce Available proportionally
+            # But we want Available to decrease by available_to_transfer only
+            # So we need to adjust: if we subtract quantity_float from On Hand, Available decreases by available_to_transfer
+            # The remaining (additional_to_add) is already reserved, so it doesn't affect Available
+            
             remaining_to_subtract = quantity_float
             for quant in source_quants:
                 if remaining_to_subtract <= 0:
@@ -369,18 +386,190 @@ class InventoryAPI(http.Controller):
                 current_qty = quant.quantity
                 if current_qty > 0:
                     subtract_amount = min(current_qty, remaining_to_subtract)
+                    # Subtract full amount from On Hand (quantity field)
                     quant.quantity = current_qty - subtract_amount
                     remaining_to_subtract -= subtract_amount
+            
+            # After subtracting, ensure Available is not negative
+            # If Available becomes negative, adjust reserved_quantity to make Available = 0
+            source_quants_after_subtract = request.env['stock.quant'].sudo().search([
+                ('product_id', '=', variant.id),
+                ('location_id', 'child_of', source_location.id),
+            ])
+            
+            for quant in source_quants_after_subtract:
+                # Refresh quant to get latest available_quantity
+                quant.invalidate_recordset(['available_quantity'])
+                current_available = quant.available_quantity
+                
+                if current_available < 0:
+                    # Available is negative, we need to make it 0
+                    # Available = quantity - reserved_quantity
+                    # If Available < 0, then reserved_quantity > quantity
+                    # We need to reduce reserved_quantity to make Available = 0
+                    try:
+                        # Calculate how much we need to reduce from reserved
+                        excess_reserved = abs(current_available)  # This is how much is over-reserved
+                        
+                        # Find ALL move lines that reserve this quant (all states)
+                        move_lines = request.env['stock.move.line'].sudo().search([
+                            ('product_id', '=', variant.id),
+                            ('location_id', 'child_of', quant.location_id.id),
+                        ])
+                        
+                        # Filter move lines that have reserved quantity
+                        move_lines_with_reserved = []
+                        for ml in move_lines:
+                            reserved = 0
+                            if hasattr(ml, 'reserved_uom_qty') and ml.reserved_uom_qty:
+                                reserved = ml.reserved_uom_qty
+                            elif hasattr(ml, 'reserved_qty') and ml.reserved_qty:
+                                reserved = ml.reserved_qty
+                            
+                            if reserved > 0:
+                                move_lines_with_reserved.append((ml, reserved))
+                        
+                        # Sort by reserved quantity (largest first) to reduce from biggest reservations first
+                        move_lines_with_reserved.sort(key=lambda x: x[1], reverse=True)
+                        
+                        # Reduce reserved quantity from move lines
+                        remaining_to_reduce = excess_reserved
+                        for move_line, current_reserved in move_lines_with_reserved:
+                            if remaining_to_reduce <= 0:
+                                break
+                            
+                            reduce_amount = min(current_reserved, remaining_to_reduce)
+                            
+                            # Reduce reserved quantity
+                            if hasattr(move_line, 'reserved_uom_qty'):
+                                move_line.reserved_uom_qty = current_reserved - reduce_amount
+                            elif hasattr(move_line, 'reserved_qty'):
+                                move_line.reserved_qty = current_reserved - reduce_amount
+                            
+                            remaining_to_reduce -= reduce_amount
+                            
+                            # If move line has no reserved quantity left, unlink it
+                            new_reserved = (move_line.reserved_uom_qty or 0) if hasattr(move_line, 'reserved_uom_qty') else (move_line.reserved_qty or 0)
+                            if new_reserved <= 0:
+                                move_line.unlink()
+                        
+                        # Re-check available after reducing reserved
+                        quant.invalidate_recordset(['available_quantity'])
+                        current_available_after = quant.available_quantity
+                        
+                        # If still negative, try to cancel moves
+                        if current_available_after < 0:
+                            remaining_to_reduce = abs(current_available_after)
+                            
+                            # Find and cancel moves that are reserving
+                            moves = request.env['stock.move'].sudo().search([
+                                ('product_id', '=', variant.id),
+                                ('location_id', 'child_of', quant.location_id.id),
+                                ('state', 'in', ['assigned', 'partially_available', 'waiting', 'confirmed']),
+                            ])
+                            
+                            for move in moves:
+                                if remaining_to_reduce <= 0:
+                                    break
+                                try:
+                                    move._action_cancel()
+                                    # Re-check available after cancel
+                                    quant.invalidate_recordset(['available_quantity'])
+                                    current_available_after = quant.available_quantity
+                                    if current_available_after >= 0:
+                                        remaining_to_reduce = 0
+                                        break
+                                    else:
+                                        remaining_to_reduce = abs(current_available_after)
+                                except:
+                                    pass
+                            
+                            # Final check: if still negative, increase quantity to make Available = 0
+                            quant.invalidate_recordset(['available_quantity'])
+                            final_available = quant.available_quantity
+                            if final_available < 0:
+                                quant.quantity = quant.quantity + abs(final_available)
+                                _logger.info(f'Adjusted quantity by +{abs(final_available)} to make Available = 0 (final fallback)')
+                            
+                    except Exception as adjust_error:
+                        # If adjustment fails completely, increase quantity to make Available = 0
+                        quant.invalidate_recordset(['available_quantity'])
+                        final_available = quant.available_quantity
+                        if final_available < 0:
+                            quant.quantity = quant.quantity + abs(final_available)
+                            _logger.warning(f'Could not adjust reserved quantity, increased quantity by {abs(final_available)} to make Available = 0: {adjust_error}')
+                
+                # Final check: ensure Available is exactly 0
+                quant.invalidate_recordset(['available_quantity'])
+                final_available_check = quant.available_quantity
+                
+                if final_available_check < 0:
+                    # Still negative, increase quantity
+                    quant.quantity = quant.quantity + abs(final_available_check)
+                    _logger.info(f'Final adjustment: increased quantity by {abs(final_available_check)} to make Available = 0')
+                elif final_available_check > 0:
+                    # Available is positive, we need to reserve it to make Available = 0
+                    # This means we need to create a reservation for the remaining available quantity
+                    try:
+                        # Find picking type for internal transfers
+                        picking_type = request.env['stock.picking.type'].sudo().search([
+                            ('code', '=', 'internal'),
+                            ('warehouse_id', '=', source_warehouse.id)
+                        ], limit=1)
+                        
+                        if not picking_type:
+                            picking_type = request.env['stock.picking.type'].sudo().search([
+                                ('code', '=', 'internal')
+                            ], limit=1)
+                        
+                        if picking_type and final_available_check > 0:
+                            # Create a move to reserve the remaining available quantity
+                            picking = request.env['stock.picking'].sudo().create({
+                                'picking_type_id': picking_type.id,
+                                'location_id': quant.location_id.id,
+                                'location_dest_id': quant.location_id.id,  # Same location (dummy)
+                                'company_id': company_id,
+                            })
+                            
+                            move = request.env['stock.move'].sudo().create({
+                                'name': f'Reserve remaining - {variant.name}',
+                                'product_id': variant.id,
+                                'product_uom': variant.uom_id.id,
+                                'product_uom_qty': final_available_check,
+                                'location_id': quant.location_id.id,
+                                'location_dest_id': quant.location_id.id,
+                                'picking_id': picking.id,
+                                'company_id': company_id,
+                            })
+                            
+                            # Confirm and assign to create reservation
+                            picking.action_confirm()
+                            picking.action_assign()
+                            
+                            # Don't validate, just keep it as reserved
+                            quant.invalidate_recordset(['available_quantity'])
+                            _logger.info(f'Created reservation of {final_available_check} to make Available = 0')
+                    except Exception as reserve_error:
+                        # If reservation fails, reduce quantity to make Available = 0
+                        quant.quantity = quant.quantity - final_available_check
+                        _logger.warning(f'Could not create reservation, reduced quantity by {final_available_check} to make Available = 0: {reserve_error}')
 
             # Add quantity to destination location
-            # Find or create quant at destination
+            # Logic:
+            # - We transfer available_to_transfer (reduces source On Hand and Available)
+            # - We add available_to_transfer to destination On Hand (this will be available)
+            # - We add additional_to_add to destination On Hand (this should be reserved)
+            # So total added to destination On Hand = quantity_float
+            # But Available should only increase by available_to_transfer
+            
+            # Add full quantity to destination On Hand
             destination_quant = request.env['stock.quant'].sudo().search([
                 ('product_id', '=', variant.id),
                 ('location_id', '=', destination_location.id),
             ], limit=1)
 
             if destination_quant:
-                # Update existing quant
+                # Update existing quant - add full requested quantity
                 destination_quant.quantity = destination_quant.quantity + quantity_float
             else:
                 # Create new quant at destination
@@ -390,6 +579,53 @@ class InventoryAPI(http.Controller):
                     'quantity': quantity_float,
                     'company_id': company_id,
                 })
+            
+            # If there's additional quantity to add (beyond available), we need to reserve it
+            # so that Available only increases by available_to_transfer, not by the full quantity
+            if additional_to_add > 0:
+                # Create a stock.move to reserve the additional quantity
+                # This will make the additional quantity reserved, so Available won't include it
+                try:
+                    # Find picking type for internal transfers
+                    picking_type = request.env['stock.picking.type'].sudo().search([
+                        ('code', '=', 'internal'),
+                        ('warehouse_id', '=', destination_warehouse.id)
+                    ], limit=1)
+                    
+                    if not picking_type:
+                        picking_type = request.env['stock.picking.type'].sudo().search([
+                            ('code', '=', 'internal')
+                        ], limit=1)
+                    
+                    if picking_type:
+                        # Create a picking and move to reserve the additional quantity
+                        picking = request.env['stock.picking'].sudo().create({
+                            'picking_type_id': picking_type.id,
+                            'location_id': destination_location.id,
+                            'location_dest_id': destination_location.id,  # Same location (dummy)
+                            'company_id': company_id,
+                        })
+                        
+                        move = request.env['stock.move'].sudo().create({
+                            'name': f'Reserve additional - {variant.name}',
+                            'product_id': variant.id,
+                            'product_uom': variant.uom_id.id,
+                            'product_uom_qty': additional_to_add,
+                            'location_id': destination_location.id,
+                            'location_dest_id': destination_location.id,
+                            'picking_id': picking.id,
+                            'company_id': company_id,
+                        })
+                        
+                        # Confirm and assign to create reservation
+                        picking.action_confirm()
+                        picking.action_assign()
+                        
+                        # The move line will be created automatically and will reserve the quantity
+                        # We don't validate it, so it stays as reserved
+                except Exception as reserve_error:
+                    # If reservation fails, log but don't fail the transfer
+                    _logger.warning(f'Could not reserve additional quantity: {reserve_error}')
 
             # Get final quantities after transfer
             source_quants_after = request.env['stock.quant'].sudo().search([
@@ -397,6 +633,7 @@ class InventoryAPI(http.Controller):
                 ('location_id', 'child_of', source_location.id),
             ])
             source_qty_after = sum(source_quants_after.mapped('quantity'))
+            source_available_after = sum(source_quants_after.mapped('available_quantity'))
 
             destination_quants_after = request.env['stock.quant'].sudo().search([
                 ('product_id', '=', variant.id),
@@ -404,7 +641,7 @@ class InventoryAPI(http.Controller):
             ])
             destination_qty_after = sum(destination_quants_after.mapped('quantity'))
 
-            _logger.info(f'✓ API: Inventory transfer (On Hand) - {quantity_float} units of {variant.name} from {source_warehouse.name} to {destination_warehouse.name}')
+            _logger.info(f'✓ API: Inventory transfer (On Hand) - {quantity_float} units of {variant.name} from {source_warehouse.name} to {destination_warehouse.name} (Available: {available_to_transfer}, Additional: {additional_to_add})')
 
             return self._json_response({
                 'success': True,
@@ -412,11 +649,17 @@ class InventoryAPI(http.Controller):
                 'product': variant.name,
                 'barcode': barcode,
                 'quantity': quantity_float,
+                'transfer_details': {
+                    'available_transferred': available_to_transfer,
+                    'additional_added': additional_to_add,
+                },
                 'source_warehouse': {
                     'id': source_warehouse.id,
                     'name': source_warehouse.name,
                     'on_hand_quantity_before': source_qty_before,
                     'on_hand_quantity_after': source_qty_after,
+                    'available_quantity_before': source_available_before,
+                    'available_quantity_after': source_available_after,
                 },
                 'destination_warehouse': {
                     'id': destination_warehouse.id,
