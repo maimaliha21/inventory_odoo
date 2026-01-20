@@ -499,19 +499,17 @@ class InventoryAPI(http.Controller):
                             quant.quantity = quant.quantity + abs(final_available)
                             _logger.warning(f'Could not adjust reserved quantity, increased quantity by {abs(final_available)} to make Available = 0: {adjust_error}')
                 
-                # Final check: ensure Available is exactly 0
+                # Final check: ensure Available is correct
+                # If we transferred more than available (additional_to_add > 0), Available should be 0
+                # Otherwise, Available can be positive (remaining available after transfer)
                 quant.invalidate_recordset(['available_quantity'])
                 final_available_check = quant.available_quantity
                 
-                if final_available_check < 0:
-                    # Still negative, increase quantity
-                    quant.quantity = quant.quantity + abs(final_available_check)
-                    _logger.info(f'Final adjustment: increased quantity by {abs(final_available_check)} to make Available = 0')
-                elif final_available_check > 0:
-                    # Available is positive, we need to reserve it to make Available = 0
-                    # This means we need to create a reservation for the remaining available quantity
+                # If we transferred more than available, Available should be 0
+                if additional_to_add > 0 and final_available_check > 0:
+                    # We transferred more than available, so Available should be 0
+                    # Reserve the remaining available quantity
                     try:
-                        # Find picking type for internal transfers
                         picking_type = request.env['stock.picking.type'].sudo().search([
                             ('code', '=', 'internal'),
                             ('warehouse_id', '=', source_warehouse.id)
@@ -522,12 +520,11 @@ class InventoryAPI(http.Controller):
                                 ('code', '=', 'internal')
                             ], limit=1)
                         
-                        if picking_type and final_available_check > 0:
-                            # Create a move to reserve the remaining available quantity
+                        if picking_type:
                             picking = request.env['stock.picking'].sudo().create({
                                 'picking_type_id': picking_type.id,
                                 'location_id': quant.location_id.id,
-                                'location_dest_id': quant.location_id.id,  # Same location (dummy)
+                                'location_dest_id': quant.location_id.id,
                                 'company_id': company_id,
                             })
                             
@@ -542,17 +539,77 @@ class InventoryAPI(http.Controller):
                                 'company_id': company_id,
                             })
                             
+                            picking.action_confirm()
+                            picking.action_assign()
+                            # Re-check available after reservation
+                            quant.invalidate_recordset(['available_quantity'])
+                            final_available_after_reserve = quant.available_quantity
+                            _logger.info(f'Reserved remaining {final_available_check} to make Available = 0 (transferred more than available). New Available: {final_available_after_reserve}')
+                            # Update final_available_check for next check
+                            final_available_check = final_available_after_reserve
+                    except Exception as e:
+                        _logger.warning(f'Could not reserve remaining available: {e}')
+                
+                # Re-check available before checking if negative
+                quant.invalidate_recordset(['available_quantity'])
+                final_available_check = quant.available_quantity
+                
+                if final_available_check < 0:
+                    # Available is negative, we need to make it 0
+                    # Instead of increasing quantity (which would increase On Hand),
+                    # we should increase reserved_quantity to make Available = 0
+                    # Available = quantity - reserved_quantity
+                    # To make Available = 0: reserved_quantity = quantity
+                    excess_to_reserve = abs(final_available_check)
+                    
+                    try:
+                        # Find picking type for internal transfers
+                        picking_type = request.env['stock.picking.type'].sudo().search([
+                            ('code', '=', 'internal'),
+                            ('warehouse_id', '=', source_warehouse.id)
+                        ], limit=1)
+                        
+                        if not picking_type:
+                            picking_type = request.env['stock.picking.type'].sudo().search([
+                                ('code', '=', 'internal')
+                            ], limit=1)
+                        
+                        if picking_type:
+                            # Create a move to reserve the excess quantity
+                            picking = request.env['stock.picking'].sudo().create({
+                                'picking_type_id': picking_type.id,
+                                'location_id': quant.location_id.id,
+                                'location_dest_id': quant.location_id.id,  # Same location (dummy)
+                                'company_id': company_id,
+                            })
+                            
+                            move = request.env['stock.move'].sudo().create({
+                                'name': f'Reserve excess - {variant.name}',
+                                'product_id': variant.id,
+                                'product_uom': variant.uom_id.id,
+                                'product_uom_qty': excess_to_reserve,
+                                'location_id': quant.location_id.id,
+                                'location_dest_id': quant.location_id.id,
+                                'picking_id': picking.id,
+                                'company_id': company_id,
+                            })
+                            
                             # Confirm and assign to create reservation
                             picking.action_confirm()
                             picking.action_assign()
                             
                             # Don't validate, just keep it as reserved
                             quant.invalidate_recordset(['available_quantity'])
-                            _logger.info(f'Created reservation of {final_available_check} to make Available = 0')
+                            _logger.info(f'Created reservation of {excess_to_reserve} to make Available = 0')
+                        else:
+                            # Fallback: increase quantity if we can't create reservation
+                            quant.quantity = quant.quantity + excess_to_reserve
+                            _logger.warning(f'Could not create reservation, increased quantity by {excess_to_reserve} to make Available = 0')
                     except Exception as reserve_error:
-                        # If reservation fails, reduce quantity to make Available = 0
-                        quant.quantity = quant.quantity - final_available_check
-                        _logger.warning(f'Could not create reservation, reduced quantity by {final_available_check} to make Available = 0: {reserve_error}')
+                        # Fallback: increase quantity if reservation fails
+                        quant.quantity = quant.quantity + excess_to_reserve
+                        _logger.warning(f'Could not create reservation, increased quantity by {excess_to_reserve} to make Available = 0: {reserve_error}')
+                # If Available is positive, leave it as is - it's correct
 
             # Add quantity to destination location
             # Logic:
