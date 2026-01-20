@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Diagnostic Tool</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1000px;
+            margin: 20px auto;
+            padding: 20px;
+            background: #f0f0f0;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+        }
+        .test-section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background: #fafafa;
+        }
+        .test-section h3 {
+            margin-top: 0;
+            color: #0078d4;
+        }
+        button {
+            background: #0078d4;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            font-size: 14px;
+            cursor: pointer;
+            margin: 5px 5px 5px 0;
+        }
+        button:hover {
+            background: #005a9e;
+        }
+        button.secondary {
+            background: #6c757d;
+        }
+        button.secondary:hover {
+            background: #5a6268;
+        }
+        .result {
+            margin-top: 15px;
+            padding: 15px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .result.success {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        .result.error {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+        .result.info {
+            background: #d1ecf1;
+            border: 1px solid #bee5eb;
+            color: #0c5460;
+        }
+        .input-group {
+            margin: 10px 0;
+        }
+        .input-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #555;
+        }
+        .input-group input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+        .status-badge.pending {
+            background: #ffc107;
+            color: #000;
+        }
+        .status-badge.success {
+            background: #28a745;
+            color: white;
+        }
+        .status-badge.error {
+            background: #dc3545;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 Odoo API Diagnostic Tool</h1>
+        <p class="subtitle">Test connectivity and diagnose API endpoint issues</p>
+
+        <div class="input-group">
+            <label for="baseUrl">Odoo Base URL:</label>
+            <input type="text" id="baseUrl" value="http://localhost:19169" placeholder="http://localhost:19169">
+        </div>
+
+        <div class="test-section">
+            <h3>1. Test Odoo Server Connection</h3>
+            <p>Check if Odoo server is running and accessible</p>
+            <button onclick="testServer()">Test Server</button>
+            <div id="serverResult" class="result" style="display: none;"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>2. Test Health Endpoint</h3>
+            <p>Check if /api/health endpoint is registered</p>
+            <button onclick="testHealth()">Test /api/health</button>
+            <div id="healthResult" class="result" style="display: none;"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>3. Test Transfer Endpoint</h3>
+            <p>Check if /api/inventory/transfer endpoint is registered</p>
+            <button onclick="testTransferEndpoint()">Test /api/inventory/transfer</button>
+            <div id="transferResult" class="result" style="display: none;"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>4. Test Full Transfer Request</h3>
+            <p>Send a complete transfer request with sample data</p>
+            <button onclick="testFullTransfer()">Test Full Transfer</button>
+            <div id="fullTransferResult" class="result" style="display: none;"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>5. Check Odoo Module Status</h3>
+            <p>Instructions to verify module is installed/upgraded</p>
+            <button onclick="showModuleInstructions()" class="secondary">Show Instructions</button>
+            <div id="moduleInstructions" class="result" style="display: none;"></div>
+        </div>
+    </div>
+
+    <script>
+        function getBaseUrl() {
+            return document.getElementById('baseUrl').value.replace(/\/$/, '');
+        }
+
+        function showResult(elementId, message, type) {
+            const element = document.getElementById(elementId);
+            element.style.display = 'block';
+            element.className = `result ${type}`;
+            element.textContent = message;
+        }
+
+        async function testServer() {
+            const baseUrl = getBaseUrl();
+            showResult('serverResult', 'Testing server connection...', 'info');
+            
+            try {
+                const response = await fetch(baseUrl, {
+                    method: 'GET',
+                    mode: 'no-cors' // This will always succeed but we can check if server responds
+                });
+                
+                // With no-cors, we can't read response, but if no error, server is up
+                showResult('serverResult', 
+                    `✓ Server appears to be running at ${baseUrl}\n\n` +
+                    `Note: Using no-cors mode, so we can't read the response.\n` +
+                    `If you see this message, the server is accessible.`, 
+                    'success');
+            } catch (error) {
+                showResult('serverResult', 
+                    `✗ Cannot connect to server at ${baseUrl}\n\n` +
+                    `Error: ${error.message}\n\n` +
+                    `Possible issues:\n` +
+                    `1. Odoo server is not running\n` +
+                    `2. Wrong port number (check if it's 19169 or another port)\n` +
+                    `3. Firewall is blocking the connection\n` +
+                    `4. Server is running on a different host/port`, 
+                    'error');
+            }
+        }
+
+        async function testHealth() {
+            const baseUrl = getBaseUrl();
+            const url = `${baseUrl}/api/health`;
+            showResult('healthResult', `Testing: ${url}\n\nSending request...`, 'info');
+            
+            try {
+                const response = await fetch(url, {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                });
+                
+                const statusText = `Status: ${response.status} ${response.statusText}`;
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    showResult('healthResult', 
+                        `✓ SUCCESS!\n\n${statusText}\n\nResponse:\n${JSON.stringify(data, null, 2)}`, 
+                        'success');
+                } else {
+                    const text = await response.text();
+                    showResult('healthResult', 
+                        `✗ FAILED\n\n${statusText}\n\nResponse:\n${text}\n\n` +
+                        `This means the endpoint exists but returned an error.\n` +
+                        `Check Odoo logs for details.`, 
+                        'error');
+                }
+            } catch (error) {
+                if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+                    showResult('healthResult', 
+                        `✗ ENDPOINT NOT FOUND\n\n` +
+                        `Error: ${error.message}\n\n` +
+                        `This usually means:\n` +
+                        `1. The module is not installed/upgraded in Odoo\n` +
+                        `2. Odoo server needs to be restarted\n` +
+                        `3. The route is not registered\n\n` +
+                        `SOLUTION:\n` +
+                        `1. Go to Odoo Apps menu\n` +
+                        `2. Search for "Inventory API"\n` +
+                        `3. Click "Upgrade" (or "Install" if not installed)\n` +
+                        `4. Restart Odoo server\n` +
+                        `5. Try again`, 
+                        'error');
+                } else {
+                    showResult('healthResult', 
+                        `✗ ERROR\n\nError: ${error.message}\n\n${error.stack}`, 
+                        'error');
+                }
+            }
+        }
+
+        async function testTransferEndpoint() {
+            const baseUrl = getBaseUrl();
+            const url = `${baseUrl}/api/inventory/transfer`;
+            showResult('transferResult', `Testing: ${url}\n\nSending OPTIONS request (CORS preflight)...`, 'info');
+            
+            try {
+                // First test OPTIONS (CORS preflight)
+                const optionsResponse = await fetch(url, {
+                    method: 'OPTIONS',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                });
+                
+                let result = `OPTIONS Request:\nStatus: ${optionsResponse.status} ${optionsResponse.statusText}\n\n`;
+                
+                // Then test POST with minimal data
+                const postResponse = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({})
+                });
+                
+                const postText = await postResponse.text();
+                result += `POST Request:\nStatus: ${postResponse.status} ${postResponse.statusText}\n\n`;
+                result += `Response:\n${postText}`;
+                
+                if (postResponse.status === 400) {
+                    // 400 is expected for empty/invalid data, means endpoint exists!
+                    showResult('transferResult', 
+                        `✓ ENDPOINT EXISTS!\n\n${result}\n\n` +
+                        `Getting 400 error is GOOD - it means the endpoint is registered.\n` +
+                        `The error is because we sent empty data.`, 
+                        'success');
+                } else if (postResponse.status === 404) {
+                    showResult('transferResult', 
+                        `✗ ENDPOINT NOT FOUND\n\n${result}\n\n` +
+                        `The endpoint is not registered. Follow the module installation steps.`, 
+                        'error');
+                } else {
+                    showResult('transferResult', result, postResponse.ok ? 'success' : 'error');
+                }
+            } catch (error) {
+                showResult('transferResult', 
+                    `✗ ERROR\n\nError: ${error.message}\n\n` +
+                    `This usually means the endpoint is not registered.\n` +
+                    `Make sure the module is installed and Odoo is restarted.`, 
+                    'error');
+            }
+        }
+
+        async function testFullTransfer() {
+            const baseUrl = getBaseUrl();
+            const url = `${baseUrl}/api/inventory/transfer`;
+            
+            const requestBody = {
+                barcode: "yyy",
+                source_warehouse_id: 1,
+                destination_warehouse_id: 3,
+                quantity: 1
+            };
+            
+            showResult('fullTransferResult', 
+                `Sending full transfer request...\n\n` +
+                `URL: ${url}\n` +
+                `Body: ${JSON.stringify(requestBody, null, 2)}\n\n` +
+                `Please wait...`, 
+                'info');
+            
+            try {
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(requestBody)
+                });
+                
+                const data = await response.json();
+                const statusText = `Status: ${response.status} ${response.statusText}`;
+                
+                if (response.ok && data.success !== false) {
+                    showResult('fullTransferResult', 
+                        `✓ SUCCESS!\n\n${statusText}\n\nResponse:\n${JSON.stringify(data, null, 2)}`, 
+                        'success');
+                } else {
+                    showResult('fullTransferResult', 
+                        `✗ REQUEST FAILED\n\n${statusText}\n\nResponse:\n${JSON.stringify(data, null, 2)}\n\n` +
+                        `Check the error message above for details.`, 
+                        'error');
+                }
+            } catch (error) {
+                showResult('fullTransferResult', 
+                    `✗ CONNECTION ERROR\n\nError: ${error.message}\n\n` +
+                    `This means we couldn't reach the endpoint.\n` +
+                    `Make sure:\n` +
+                    `1. Odoo server is running\n` +
+                    `2. Module is installed/upgraded\n` +
+                    `3. Server was restarted after code changes`, 
+                    'error');
+            }
+        }
+
+        function showModuleInstructions() {
+            const instructions = `HOW TO INSTALL/UPGRADE THE MODULE IN ODOO:
+
+1. Open Odoo in your browser:
+   ${getBaseUrl()}
+
+2. Go to Apps menu (click the Apps icon in the top menu)
+
+3. Remove the "Apps" filter:
+   - Click the "Apps" filter button to remove it
+   - This shows all modules including custom ones
+
+4. Search for "Inventory API":
+   - Type "Inventory API" in the search box
+   - Or look for it in the list
+
+5. Install or Upgrade:
+   - If you see "Install" button → Click it
+   - If you see "Upgrade" button → Click it
+   - Wait for the upgrade to complete
+
+6. Restart Odoo Server:
+   - Stop the Odoo server (Ctrl+C in terminal)
+   - Start it again
+   - Wait for it to fully load
+
+7. Test again using the buttons above
+
+TROUBLESHOOTING:
+
+- If module doesn't appear: Check that the module folder is in the addons path
+- If upgrade fails: Check Odoo logs for errors
+- If endpoints still don't work: Make sure you restarted the server after upgrading
+
+VERIFY MODULE IS LOADED:
+
+After restarting, you should see in Odoo logs:
+"Inventory API Module: Controller loaded successfully"
+
+If you don't see this, the module isn't loading properly.`;
+            
+            showResult('moduleInstructions', instructions, 'info');
+        }
+    </script>
+</body>
+</html>
+

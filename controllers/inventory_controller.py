@@ -220,13 +220,13 @@ class InventoryAPI(http.Controller):
     @http.route('/api/inventory/transfer', type='http', auth='none', methods=['POST', 'OPTIONS'], csrf=False, cors='*')
     def transfer_inventory(self, **kwargs):
         """
-        Transfer inventory between locations (warehouse → store)
+        Transfer inventory from one warehouse to another
         
         POST /api/inventory/transfer
         Body: {
             "barcode": "123456789",
             "source_warehouse_id": 1,
-            "destination_store_id": 2,
+            "destination_warehouse_id": 2,
             "quantity": 10
         }
         """
@@ -249,7 +249,7 @@ class InventoryAPI(http.Controller):
             data = json.loads(raw_body)
             barcode = data.get('barcode')
             source_warehouse_id = data.get('source_warehouse_id')
-            destination_store_id = data.get('destination_store_id')
+            destination_warehouse_id = data.get('destination_warehouse_id')
             quantity = data.get('quantity')
 
             # Validate inputs
@@ -267,11 +267,11 @@ class InventoryAPI(http.Controller):
                     'message': 'source_warehouse_id is required'
                 }, status=400)
 
-            if not destination_store_id:
+            if not destination_warehouse_id:
                 return self._json_response({
                     'success': False,
-                    'error': 'Missing destination_store_id',
-                    'message': 'destination_store_id is required'
+                    'error': 'Missing destination_warehouse_id',
+                    'message': 'destination_warehouse_id is required'
                 }, status=400)
 
             if not quantity or float(quantity) <= 0:
@@ -293,7 +293,7 @@ class InventoryAPI(http.Controller):
                     'message': f'No product found with barcode: {barcode}'
                 }, status=404)
 
-            # Get source and destination locations
+            # Get source and destination warehouses
             source_warehouse = request.env['stock.warehouse'].sudo().browse(int(source_warehouse_id))
             if not source_warehouse.exists():
                 return self._json_response({
@@ -302,102 +302,128 @@ class InventoryAPI(http.Controller):
                     'source_warehouse_id': source_warehouse_id
                 }, status=404)
 
-            destination_location = request.env['stock.location'].sudo().browse(int(destination_store_id))
-            if not destination_location.exists():
+            destination_warehouse = request.env['stock.warehouse'].sudo().browse(int(destination_warehouse_id))
+            if not destination_warehouse.exists():
                 return self._json_response({
                     'success': False,
-                    'error': 'Destination location not found',
-                    'destination_store_id': destination_store_id
+                    'error': 'Destination warehouse not found',
+                    'destination_warehouse_id': destination_warehouse_id
                 }, status=404)
 
+            # Check if source and destination are the same
+            if source_warehouse.id == destination_warehouse.id:
+                return self._json_response({
+                    'success': False,
+                    'error': 'Same warehouse',
+                    'message': 'Source and destination warehouses cannot be the same'
+                }, status=400)
+
             source_location = source_warehouse.lot_stock_id
+            destination_location = destination_warehouse.lot_stock_id
             quantity_float = float(quantity)
 
-            # Check available quantity at source
+            # Get On Hand quantity (quantity field) at source
             source_quants = request.env['stock.quant'].sudo().search([
                 ('product_id', '=', variant.id),
                 ('location_id', 'child_of', source_location.id),
             ])
-            available_qty = sum(source_quants.mapped('available_quantity'))
+            on_hand_qty = sum(source_quants.mapped('quantity'))
 
-            if available_qty < quantity_float:
+            # Validate quantity against On Hand quantity
+            if on_hand_qty < quantity_float:
                 return self._json_response({
                     'success': False,
                     'error': 'Insufficient stock',
-                    'message': f'Available quantity ({available_qty}) is less than requested ({quantity_float})',
-                    'available_quantity': available_qty,
+                    'message': f'On Hand quantity ({on_hand_qty}) is less than requested ({quantity_float})',
+                    'on_hand_quantity': on_hand_qty,
                     'requested_quantity': quantity_float
                 }, status=400)
 
-            # Create stock picking for transfer
-            picking_type = request.env['stock.picking.type'].sudo().search([
-                ('code', '=', 'internal'),
-                ('warehouse_id', '=', source_warehouse.id)
-            ], limit=1)
-
-            if not picking_type:
-                # Try to find any internal picking type
-                picking_type = request.env['stock.picking.type'].sudo().search([
-                    ('code', '=', 'internal')
-                ], limit=1)
-
-            if not picking_type:
+            if on_hand_qty <= 0:
                 return self._json_response({
                     'success': False,
-                    'error': 'Picking type not found',
-                    'message': 'No internal picking type configured'
-                }, status=500)
+                    'error': 'No stock',
+                    'message': f'No On Hand quantity found for barcode {barcode} at source warehouse',
+                    'on_hand_quantity': on_hand_qty
+                }, status=400)
 
-            # Create picking
-            picking_vals = {
-                'picking_type_id': picking_type.id,
-                'location_id': source_location.id,
-                'location_dest_id': destination_location.id,
-                'move_ids': [(0, 0, {
-                    'name': variant.name,
+            # Get company_id from warehouse or product
+            company_id = source_warehouse.company_id.id if source_warehouse.company_id else (variant.company_id.id if variant.company_id else None)
+            if not company_id:
+                company_id = request.env['res.company'].sudo().search([], limit=1).id
+
+            # Get current quantities before transfer
+            source_qty_before = on_hand_qty
+            destination_quants_before = request.env['stock.quant'].sudo().search([
+                ('product_id', '=', variant.id),
+                ('location_id', 'child_of', destination_location.id),
+            ])
+            destination_qty_before = sum(destination_quants_before.mapped('quantity'))
+
+            # Subtract quantity from source location quants
+            remaining_to_subtract = quantity_float
+            for quant in source_quants:
+                if remaining_to_subtract <= 0:
+                    break
+                
+                current_qty = quant.quantity
+                if current_qty > 0:
+                    subtract_amount = min(current_qty, remaining_to_subtract)
+                    quant.quantity = current_qty - subtract_amount
+                    remaining_to_subtract -= subtract_amount
+
+            # Add quantity to destination location
+            # Find or create quant at destination
+            destination_quant = request.env['stock.quant'].sudo().search([
+                ('product_id', '=', variant.id),
+                ('location_id', '=', destination_location.id),
+            ], limit=1)
+
+            if destination_quant:
+                # Update existing quant
+                destination_quant.quantity = destination_quant.quantity + quantity_float
+            else:
+                # Create new quant at destination
+                destination_quant = request.env['stock.quant'].sudo().create({
                     'product_id': variant.id,
-                    'product_uom': variant.uom_id.id,
-                    'product_uom_qty': quantity_float,
-                    'location_id': source_location.id,
-                    'location_dest_id': destination_location.id,
-                })]
-            }
+                    'location_id': destination_location.id,
+                    'quantity': quantity_float,
+                    'company_id': company_id,
+                })
 
-            picking = request.env['stock.picking'].sudo().create(picking_vals)
+            # Get final quantities after transfer
+            source_quants_after = request.env['stock.quant'].sudo().search([
+                ('product_id', '=', variant.id),
+                ('location_id', 'child_of', source_location.id),
+            ])
+            source_qty_after = sum(source_quants_after.mapped('quantity'))
 
-            # Validate and confirm picking
-            picking.action_confirm()
-            picking.action_assign()
+            destination_quants_after = request.env['stock.quant'].sudo().search([
+                ('product_id', '=', variant.id),
+                ('location_id', 'child_of', destination_location.id),
+            ])
+            destination_qty_after = sum(destination_quants_after.mapped('quantity'))
 
-            # Process the transfer
-            for move in picking.move_ids:
-                for move_line in move.move_line_ids:
-                    move_line.qty_done = quantity_float
-                if not move.move_line_ids:
-                    # Create move line if it doesn't exist
-                    request.env['stock.move.line'].sudo().create({
-                        'move_id': move.id,
-                        'product_id': variant.id,
-                        'product_uom_id': variant.uom_id.id,
-                        'location_id': source_location.id,
-                        'location_dest_id': destination_location.id,
-                        'qty_done': quantity_float,
-                    })
-
-            picking.button_validate()
-
-            _logger.info(f'✓ API: Inventory transfer - {quantity_float} units of {variant.name} from {source_warehouse.name} to {destination_location.name}')
+            _logger.info(f'✓ API: Inventory transfer (On Hand) - {quantity_float} units of {variant.name} from {source_warehouse.name} to {destination_warehouse.name}')
 
             return self._json_response({
                 'success': True,
                 'message': 'Inventory transfer completed',
-                'picking_id': picking.id,
-                'picking_name': picking.name,
                 'product': variant.name,
                 'barcode': barcode,
                 'quantity': quantity_float,
-                'source': source_warehouse.name,
-                'destination': destination_location.name
+                'source_warehouse': {
+                    'id': source_warehouse.id,
+                    'name': source_warehouse.name,
+                    'on_hand_quantity_before': source_qty_before,
+                    'on_hand_quantity_after': source_qty_after,
+                },
+                'destination_warehouse': {
+                    'id': destination_warehouse.id,
+                    'name': destination_warehouse.name,
+                    'on_hand_quantity_before': destination_qty_before,
+                    'on_hand_quantity_after': destination_qty_after,
+                }
             })
 
         except json.JSONDecodeError:
@@ -503,64 +529,71 @@ class InventoryAPI(http.Controller):
 
             location = warehouse.lot_stock_id
 
-            # Get current quantity
-            current_quants = request.env['stock.quant'].sudo().search([
+            # Find or get quant
+            quant = request.env['stock.quant'].sudo().search([
                 ('product_id', '=', variant.id),
-                ('location_id', 'child_of', location.id),
-            ])
-            current_quantity = sum(current_quants.mapped('quantity'))
+                ('location_id', '=', location.id),
+            ], limit=1)
 
-            # Calculate target quantity based on operation
+            # Get current inventory_quantity (counted quantity) or fallback to quantity (on-hand)
+            if quant and quant.inventory_quantity is not None:
+                current_counted_quantity = quant.inventory_quantity
+            elif quant:
+                # If quant exists but no inventory_quantity set, use current quantity
+                current_counted_quantity = quant.quantity
+            else:
+                # No quant exists, check all quants at this location
+                current_quants = request.env['stock.quant'].sudo().search([
+                    ('product_id', '=', variant.id),
+                    ('location_id', 'child_of', location.id),
+                ])
+                current_counted_quantity = sum(current_quants.mapped('quantity')) if current_quants else 0
+
+            # Calculate target inventory_quantity (counted quantity) based on operation
             if operation == 'set':
-                target_quantity = quantity_float
-                adjustment_qty = target_quantity - current_quantity
+                target_inventory_quantity = quantity_float
             elif operation == 'add':
-                target_quantity = current_quantity + quantity_float
-                adjustment_qty = quantity_float
+                target_inventory_quantity = current_counted_quantity + quantity_float
             elif operation == 'subtract':
-                target_quantity = current_quantity - quantity_float
-                adjustment_qty = -quantity_float
-                if target_quantity < 0:
+                target_inventory_quantity = current_counted_quantity - quantity_float
+                if target_inventory_quantity < 0:
                     return self._json_response({
                         'success': False,
                         'error': 'Insufficient stock',
-                        'message': f'Cannot subtract {quantity_float} from current quantity {current_quantity}',
-                        'current_quantity': current_quantity,
+                        'message': f'Cannot subtract {quantity_float} from current counted quantity {current_counted_quantity}',
+                        'current_counted_quantity': current_counted_quantity,
                         'requested_subtract': quantity_float
                     }, status=400)
 
-            # Create inventory adjustment using stock.quant
-            if adjustment_qty != 0:
-                # Find or create quant
-                quant = request.env['stock.quant'].sudo().search([
-                    ('product_id', '=', variant.id),
-                    ('location_id', '=', location.id),
-                ], limit=1)
+            # Get company_id from warehouse or variant
+            company_id = warehouse.company_id.id if warehouse.company_id else (variant.company_id.id if variant.company_id else None)
+            if not company_id:
+                company_id = request.env['res.company'].sudo().search([], limit=1).id
 
-                if quant:
-                    # Update existing quant
-                    quant.inventory_quantity = target_quantity
-                    quant.action_apply_inventory()
-                else:
-                    # Create new quant
-                    quant = request.env['stock.quant'].sudo().create({
-                        'product_id': variant.id,
-                        'location_id': location.id,
-                        'inventory_quantity': target_quantity,
-                    })
-                    quant.action_apply_inventory()
+            # Update or create quant with inventory_quantity (counted quantity)
+            if quant:
+                # Update existing quant - set inventory_quantity without applying
+                quant.inventory_quantity = target_inventory_quantity
+            else:
+                # Create new quant with inventory_quantity
+                quant = request.env['stock.quant'].sudo().create({
+                    'product_id': variant.id,
+                    'location_id': location.id,
+                    'inventory_quantity': target_inventory_quantity,
+                    'company_id': company_id,
+                })
 
-            _logger.info(f'✓ API: Inventory adjustment - {operation} {quantity_float} units of {variant.name} at {warehouse.name} (from {current_quantity} to {target_quantity})')
+            _logger.info(f'✓ API: Inventory adjustment (counted quantity) - {operation} {quantity_float} units of {variant.name} at {warehouse.name} (from {current_counted_quantity} to {target_inventory_quantity})')
 
             return self._json_response({
                 'success': True,
-                'message': 'Inventory adjustment completed',
+                'message': 'Counted quantity updated',
                 'product': variant.name,
                 'barcode': barcode,
                 'operation': operation,
                 'quantity': quantity_float,
-                'previous_quantity': current_quantity,
-                'new_quantity': target_quantity,
+                'previous_counted_quantity': current_counted_quantity,
+                'new_counted_quantity': target_inventory_quantity,
                 'warehouse': warehouse.name
             })
 
@@ -577,4 +610,3 @@ class InventoryAPI(http.Controller):
                 'error': str(e),
                 'message': 'Failed to adjust inventory'
             }, status=500)
-

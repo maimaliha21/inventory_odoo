@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Inventory API Tester</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 30px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #555;
+        }
+        input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+        button {
+            background: #0078d4;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 4px;
+            font-size: 16px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        button:hover {
+            background: #005a9e;
+        }
+        .response {
+            margin-top: 30px;
+            padding: 15px;
+            border-radius: 4px;
+            background: #f9f9f9;
+            border: 1px solid #ddd;
+        }
+        .response pre {
+            background: #2d2d2d;
+            color: #f8f8f2;
+            padding: 15px;
+            border-radius: 4px;
+            overflow-x: auto;
+            font-size: 13px;
+        }
+        .success {
+            border-left: 4px solid #4caf50;
+        }
+        .error {
+            border-left: 4px solid #f44336;
+        }
+        .status {
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        .status.success {
+            color: #4caf50;
+        }
+        .status.error {
+            color: #f44336;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔧 Inventory API Tester</h1>
+        
+        <div class="form-group">
+            <label for="url">API URL:</label>
+            <input type="text" id="url" value="http://localhost:19169/api/inventory/transfer" placeholder="http://localhost:19169/api/inventory/transfer">
+        </div>
+        
+        <div class="form-group">
+            <label for="barcode">Barcode:</label>
+            <input type="text" id="barcode" value="yyy" placeholder="Product barcode">
+        </div>
+        
+        <div class="form-group">
+            <label for="source_warehouse_id">Source Warehouse ID:</label>
+            <input type="number" id="source_warehouse_id" value="1" placeholder="1">
+        </div>
+        
+        <div class="form-group">
+            <label for="destination_warehouse_id">Destination Warehouse ID:</label>
+            <input type="number" id="destination_warehouse_id" value="3" placeholder="3">
+        </div>
+        
+        <div class="form-group">
+            <label for="quantity">Quantity:</label>
+            <input type="number" id="quantity" value="1" placeholder="1">
+        </div>
+        
+        <button onclick="testTransfer()">🚀 Send Request</button>
+        <button onclick="testHealth()">🏥 Test Health Endpoint</button>
+        <button onclick="clearResponse()">Clear</button>
+        
+        <div id="response" class="response" style="display: none;">
+            <div id="status" class="status"></div>
+            <pre id="responseBody"></pre>
+        </div>
+    </div>
+
+    <script>
+        async function testTransfer() {
+            const url = document.getElementById('url').value;
+            const barcode = document.getElementById('barcode').value;
+            const source_warehouse_id = parseInt(document.getElementById('source_warehouse_id').value);
+            const destination_warehouse_id = parseInt(document.getElementById('destination_warehouse_id').value);
+            const quantity = parseFloat(document.getElementById('quantity').value);
+            
+            const requestBody = {
+                barcode: barcode,
+                source_warehouse_id: source_warehouse_id,
+                destination_warehouse_id: destination_warehouse_id,
+                quantity: quantity
+            };
+            
+            const responseDiv = document.getElementById('response');
+            const statusDiv = document.getElementById('status');
+            const responseBody = document.getElementById('responseBody');
+            
+            responseDiv.style.display = 'block';
+            statusDiv.textContent = '⏳ Sending request...';
+            responseBody.textContent = 'Loading...';
+            responseDiv.className = 'response';
+            
+            try {
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(requestBody)
+                });
+                
+                const data = await response.json();
+                const isSuccess = response.ok && data.success !== false;
+                
+                statusDiv.textContent = `Status: ${response.status} ${response.statusText}`;
+                statusDiv.className = `status ${isSuccess ? 'success' : 'error'}`;
+                responseBody.textContent = JSON.stringify(data, null, 2);
+                responseDiv.className = `response ${isSuccess ? 'success' : 'error'}`;
+                
+            } catch (error) {
+                statusDiv.textContent = '❌ Connection Error';
+                statusDiv.className = 'status error';
+                
+                let errorDetails = `Error: ${error.message}\n\n`;
+                errorDetails += `Troubleshooting:\n`;
+                errorDetails += `1. Is Odoo server running on port 19169?\n`;
+                errorDetails += `2. Check if the URL is correct: ${url}\n`;
+                errorDetails += `3. Try opening: http://localhost:19169/api/health in your browser\n`;
+                errorDetails += `4. Check Windows Firewall settings\n`;
+                errorDetails += `5. Verify Odoo is listening on the correct port\n\n`;
+                errorDetails += `Error Type: ${error.name}\n`;
+                errorDetails += `Full Error: ${error.stack || error.toString()}`;
+                
+                responseBody.textContent = errorDetails;
+                responseDiv.className = 'response error';
+            }
+        }
+        
+        async function testHealth() {
+            const baseUrl = document.getElementById('url').value.replace('/api/inventory/transfer', '');
+            const healthUrl = baseUrl + '/api/health';
+            
+            const responseDiv = document.getElementById('response');
+            const statusDiv = document.getElementById('status');
+            const responseBody = document.getElementById('responseBody');
+            
+            responseDiv.style.display = 'block';
+            statusDiv.textContent = '⏳ Testing health endpoint...';
+            responseBody.textContent = `Testing: ${healthUrl}`;
+            responseDiv.className = 'response';
+            
+            try {
+                const response = await fetch(healthUrl, {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                });
+                
+                const data = await response.json();
+                const isSuccess = response.ok;
+                
+                statusDiv.textContent = `Health Check: ${response.status} ${response.statusText}`;
+                statusDiv.className = `status ${isSuccess ? 'success' : 'error'}`;
+                responseBody.textContent = JSON.stringify(data, null, 2);
+                responseDiv.className = `response ${isSuccess ? 'success' : 'error'}`;
+                
+            } catch (error) {
+                statusDiv.textContent = '❌ Health Check Failed';
+                statusDiv.className = 'status error';
+                responseBody.textContent = `Cannot reach server at ${healthUrl}\n\nError: ${error.message}\n\nThis means:\n- Server is not running, OR\n- Wrong port number, OR\n- Firewall is blocking the connection`;
+                responseDiv.className = 'response error';
+            }
+        }
+        
+        function clearResponse() {
+            document.getElementById('response').style.display = 'none';
+        }
+    </script>
+</body>
+</html>
+
