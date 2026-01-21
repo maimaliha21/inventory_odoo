@@ -7,4 +7,6 @@ access_stock_location_api,stock.location.api,stock.model_stock_location,base.gro
 access_stock_warehouse_api,stock.warehouse.api,stock.model_stock_warehouse,base.group_user,1,0,0,0
 access_product_template_api,product.template.api,product.model_product_template,base.group_user,1,0,0,0
 access_product_product_api,product.product.api,product.model_product_product,base.group_user,1,0,0,0
+access_stock_quant_change_user,stock.quant.change user,model_stock_quant_change,base.group_user,1,0,0,0
+access_stock_quant_change_manager,stock.quant.change manager,model_stock_quant_change,stock.group_stock_manager,1,1,1,1
 

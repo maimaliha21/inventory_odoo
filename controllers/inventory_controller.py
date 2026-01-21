@@ -56,6 +56,35 @@ class InventoryAPI(http.Controller):
             'module': 'inventory_api'
         })
 
+    def _log_quant_change(self, *, quant=None, product=None, location=None,
+                         change_type="other",
+                         on_hand_before=0.0, on_hand_after=0.0,
+                         available_before=0.0, available_after=0.0,
+                         location_from=None, location_to=None,
+                         ref=None, note=None):
+        """
+        Helper method to log quant changes
+        """
+        try:
+            vals = {
+                "quant_id": quant.id if quant else False,
+                "product_id": product.id if product else False,
+                "location_id": location.id if location else False,
+                "change_type": change_type,
+                "on_hand_before": float(on_hand_before or 0.0),
+                "on_hand_after": float(on_hand_after or 0.0),
+                "available_before": float(available_before or 0.0),
+                "available_after": float(available_after or 0.0),
+                "location_from_id": location_from.id if location_from else False,
+                "location_to_id": location_to.id if location_to else False,
+                "ref": ref or "",
+                "note": note or "",
+                "user_id": request.env.user.id,
+            }
+            request.env["stock.quant.change"].sudo().create(vals)
+        except Exception as e:
+            _logger.warning(f'Failed to log quant change: {e}', exc_info=True)
+
     def _extract_size_and_color(self, variant):
         """
         Extract size and color from product variant attributes
@@ -327,8 +356,11 @@ class InventoryAPI(http.Controller):
                 ('product_id', '=', variant.id),
                 ('location_id', 'child_of', source_location.id),
             ])
+            # Refresh to ensure computed fields are up to date
+            source_quants.invalidate_recordset(['available_quantity'])
             on_hand_qty = sum(source_quants.mapped('quantity'))
-            available_qty = sum(source_quants.mapped('available_quantity'))
+            # Read available_quantity directly from each quant after refresh
+            available_qty = sum(q.available_quantity for q in source_quants)
 
             # Validate quantity against On Hand quantity
             if on_hand_qty < quantity_float:
@@ -360,7 +392,10 @@ class InventoryAPI(http.Controller):
                 ('product_id', '=', variant.id),
                 ('location_id', 'child_of', destination_location.id),
             ])
+            # Refresh to ensure computed fields are up to date
+            destination_quants_before.invalidate_recordset(['available_quantity'])
             destination_qty_before = sum(destination_quants_before.mapped('quantity'))
+            destination_available_before = sum(q.available_quantity for q in destination_quants_before)
 
             # Calculate how much to transfer:
             # - Transfer available quantity (this will reduce Available)
@@ -697,6 +732,47 @@ class InventoryAPI(http.Controller):
                 ('location_id', 'child_of', destination_location.id),
             ])
             destination_qty_after = sum(destination_quants_after.mapped('quantity'))
+            dest_available_after = sum(destination_quants_after.mapped('available_quantity'))
+
+            # Log changes for source location
+            source_quant = request.env["stock.quant"].sudo().search([
+                ("product_id", "=", variant.id),
+                ("location_id", "=", source_location.id),
+            ], limit=1)
+            self._log_quant_change(
+                quant=source_quant,
+                product=variant,
+                location=source_location,
+                change_type="transfer",
+                on_hand_before=source_qty_before,
+                on_hand_after=source_qty_after,
+                available_before=source_available_before,
+                available_after=source_available_after,
+                location_from=source_location,
+                location_to=destination_location,
+                ref=f"API transfer barcode={barcode}",
+                note=f"Transferred {quantity_float} (available part {available_to_transfer}, additional {additional_to_add})"
+            )
+
+            # Log changes for destination location
+            dest_quant = request.env["stock.quant"].sudo().search([
+                ("product_id", "=", variant.id),
+                ("location_id", "=", destination_location.id),
+            ], limit=1)
+            self._log_quant_change(
+                quant=dest_quant,
+                product=variant,
+                location=destination_location,
+                change_type="transfer",
+                on_hand_before=destination_qty_before,
+                on_hand_after=destination_qty_after,
+                available_before=destination_available_before,
+                available_after=dest_available_after,
+                location_from=source_location,
+                location_to=destination_location,
+                ref=f"API transfer barcode={barcode}",
+                note=f"Received {quantity_float} (available part {available_to_transfer}, additional {additional_to_add})"
+            )
 
             _logger.info(f'✓ API: Inventory transfer (On Hand) - {quantity_float} units of {variant.name} from {source_warehouse.name} to {destination_warehouse.name} (Available: {available_to_transfer}, Additional: {additional_to_add})')
 
@@ -870,6 +946,17 @@ class InventoryAPI(http.Controller):
             if not company_id:
                 company_id = request.env['res.company'].sudo().search([], limit=1).id
 
+            # Get quantities before adjustment
+            quants_before = request.env["stock.quant"].sudo().search([
+                ("product_id", "=", variant.id),
+                ("location_id", "child_of", location.id),
+            ])
+            # Refresh to ensure computed fields are up to date
+            quants_before.invalidate_recordset(['available_quantity'])
+            on_hand_before = sum(quants_before.mapped("quantity"))
+            # Read available_quantity directly from each quant after refresh
+            available_before = sum(q.available_quantity for q in quants_before)
+
             # Update or create quant with inventory_quantity (counted quantity)
             if quant:
                 # Update existing quant - set inventory_quantity without applying
@@ -882,6 +969,28 @@ class InventoryAPI(http.Controller):
                     'inventory_quantity': target_inventory_quantity,
                     'company_id': company_id,
                 })
+
+            # Get quantities after adjustment (note: inventory_quantity is counted, not applied yet)
+            # So on_hand and available won't change until Apply is done
+            on_hand_after = on_hand_before  # quantity hasn't changed yet
+            available_after = available_before  # available hasn't changed yet
+
+            # Log the change
+            ct = {"set": "adjust_set", "add": "adjust_add", "subtract": "adjust_subtract"}.get(operation, "other")
+            self._log_quant_change(
+                quant=quant,
+                product=variant,
+                location=location,
+                change_type=ct,
+                on_hand_before=on_hand_before,
+                on_hand_after=on_hand_after,
+                available_before=available_before,
+                available_after=available_after,
+                location_from=location,
+                location_to=location,
+                ref=f"API adjust barcode={barcode}",
+                note=f"operation={operation} counted_target={target_inventory_quantity}"
+            )
 
             _logger.info(f'✓ API: Inventory adjustment (counted quantity) - {operation} {quantity_float} units of {variant.name} at {warehouse.name} (from {current_counted_quantity} to {target_inventory_quantity})')
 

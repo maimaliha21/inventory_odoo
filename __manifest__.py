@@ -26,6 +26,8 @@
     'depends': ['base', 'product', 'stock'],
     'data': [
         'security/ir.model.access.csv',
+        'views/stock_quant_change_views.xml',
+        'views/stock_quant_inherit.xml',
     ],
     'installable': True,
     'application': False,

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+  <record id="view_stock_quant_change_list" model="ir.ui.view">
+    <field name="name">stock.quant.change.list</field>
+    <field name="model">stock.quant.change</field>
+    <field name="arch" type="xml">
+      <list string="Quant Changes" create="false" delete="false">
+        <field name="create_date" string="Date"/>
+        <field name="user_id"/>
+        <field name="change_type"/>
+        <field name="direction"/>
+        <field name="product_id"/>
+        <field name="location_id"/>
+        <field name="location_from_id"/>
+        <field name="location_to_id"/>
+        <field name="available_before"/>
+        <field name="available_after"/>
+        <field name="on_hand_before"/>
+        <field name="on_hand_after"/>
+        <field name="delta_on_hand" string="Transferred Amount"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="action_stock_quant_change" model="ir.actions.act_window">
+    <field name="name">Changes</field>
+    <field name="res_model">stock.quant.change</field>
+    <field name="view_mode">list</field>
+    <field name="domain">[]</field>
+    <field name="context">{}</field>
+  </record>
+</odoo>
+
