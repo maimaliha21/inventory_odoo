@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+  <record id="view_api_token_tree" model="ir.ui.view">
+    <field name="name">api.token.tree</field>
+    <field name="model">api.token</field>
+    <field name="arch" type="xml">
+        <list string="API Tokens">
+        <field name="name"/>
+        <field name="token"/>
+        <field name="active"/>
+        <field name="user_id"/>
+        <field name="create_date"/>
+        <field name="last_used"/>
+        <field name="usage_count"/>
+      </list>
+    </field>
+  </record>
+
+  <record id="view_api_token_form" model="ir.ui.view">
+    <field name="name">api.token.form</field>
+    <field name="model">api.token</field>
+    <field name="arch" type="xml">
+      <form string="API Token">
+        <sheet>
+          <group>
+            <group>
+              <field name="name"/>
+              <field name="token" readonly="1"/>
+              <field name="active"/>
+            </group>
+            <group>
+              <field name="user_id" readonly="1"/>
+              <field name="create_date" readonly="1"/>
+              <field name="last_used" readonly="1"/>
+              <field name="usage_count" readonly="1"/>
+            </group>
+          </group>
+          <div class="alert alert-warning" role="alert">
+            <strong>🔒 Security:</strong> Keep your API tokens secure. Copy and store them safely when creating new tokens.
+          </div>
+          <div class="alert alert-info" role="alert">
+            <strong>Usage:</strong> Include this token in API requests using one of these methods:
+            <ul>
+              <li>Authorization header: <code>Authorization: Bearer &lt;token&gt;</code></li>
+              <li>X-API-Token header: <code>X-API-Token: &lt;token&gt;</code></li>
+            </ul>
+          </div>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <record id="action_api_token" model="ir.actions.act_window">
+    <field name="name">API Tokens</field>
+    <field name="res_model">api.token</field>
+    <field name="view_mode">list,form</field>
+    <field name="help" type="html">
+      <p class="o_view_nocontent_smiling_face">
+        Create your first API Token
+      </p>
+      <p>
+        API tokens are required to access the Inventory API endpoints.
+        Create a token for each application or system that needs API access.
+      </p>
+    </field>
+  </record>
+
+  <menuitem id="menu_api_token"
+            name="API Tokens"
+            parent="stock.menu_stock_root"
+            action="action_api_token"
+            sequence="100"/>
+</odoo>
+

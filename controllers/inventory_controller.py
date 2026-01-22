@@ -25,7 +25,7 @@ class InventoryAPI(http.Controller):
         return {
             'Access-Control-Allow-Origin': '*',
             'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-API-Token, X-Requested-With',
             'Access-Control-Max-Age': '3600',
         }
 
@@ -39,6 +39,40 @@ class InventoryAPI(http.Controller):
             status=status,
             headers=self._cors_headers()
         )
+
+    def _validate_token(self):
+        """
+        Validate API token from request headers
+        Returns (is_valid, token_record, error_response)
+        """
+        # Get token from Authorization header
+        auth_header = request.httprequest.headers.get('Authorization', '')
+        
+        # Support both "Bearer <token>" and just "<token>" formats
+        if auth_header.startswith('Bearer '):
+            token = auth_header[7:].strip()
+        else:
+            # Also check X-API-Token header as alternative
+            token = request.httprequest.headers.get('X-API-Token', '') or auth_header.strip()
+        
+        if not token:
+            return False, None, self._json_response({
+                'success': False,
+                'error': 'Missing API token',
+                'message': 'API token is required. Include it in Authorization header as "Bearer <token>" or in X-API-Token header'
+            }, status=401)
+        
+        # Validate token
+        token_record = request.env['api.token'].sudo().validate_token(token)
+        
+        if not token_record:
+            return False, None, self._json_response({
+                'success': False,
+                'error': 'Invalid API token',
+                'message': 'The provided API token is invalid or inactive'
+            }, status=401)
+        
+        return True, token_record, None
 
     @http.route('/api/health', type='http', auth='none', methods=['GET', 'OPTIONS'], csrf=False, cors='*')
     def health_check(self):
@@ -135,8 +169,10 @@ class InventoryAPI(http.Controller):
         Get inventory table by SKU (מק"ט) and warehouse/store ID
         
         GET /api/inventory/by-sku?sku=XXX&warehouse_id=1
+        Headers: Authorization: Bearer <token> or X-API-Token: <token>
         or
         GET /api/inventory/by-sku?sku=XXX&store_id=1
+        Headers: Authorization: Bearer <token> or X-API-Token: <token>
         
         Returns list of product variants with:
         - Full barcode
@@ -146,6 +182,11 @@ class InventoryAPI(http.Controller):
         """
         if request.httprequest.method == 'OPTIONS':
             return Response(status=200, headers=self._cors_headers())
+
+        # Validate token
+        is_valid, token_record, error_response = self._validate_token()
+        if not is_valid:
+            return error_response
 
         try:
             if not sku:
@@ -252,6 +293,7 @@ class InventoryAPI(http.Controller):
         Transfer inventory from one warehouse to another
         
         POST /api/inventory/transfer
+        Headers: Authorization: Bearer <token> or X-API-Token: <token>
         Body: {
             "barcode": "123456789",
             "source_warehouse_id": 1,
@@ -261,6 +303,11 @@ class InventoryAPI(http.Controller):
         """
         if request.httprequest.method == 'OPTIONS':
             return Response(status=200, headers=self._cors_headers())
+
+        # Validate token
+        is_valid, token_record, error_response = self._validate_token()
+        if not is_valid:
+            return error_response
 
         try:
             # Parse JSON body
@@ -822,6 +869,7 @@ class InventoryAPI(http.Controller):
         Adjust inventory (inventory corrections)
         
         POST /api/inventory/adjust
+        Headers: Authorization: Bearer <token> or X-API-Token: <token>
         Body: {
             "barcode": "123456789",
             "warehouse_id": 1,
@@ -831,6 +879,11 @@ class InventoryAPI(http.Controller):
         """
         if request.httprequest.method == 'OPTIONS':
             return Response(status=200, headers=self._cors_headers())
+
+        # Validate token
+        is_valid, token_record, error_response = self._validate_token()
+        if not is_valid:
+            return error_response
 
         try:
             # Parse JSON body
